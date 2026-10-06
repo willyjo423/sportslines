@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Line Watch</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#262d36; --ink:#e6edf3;
+    --dim:#8b949e; --up:#3fb950; --down:#f85149; --warn:#d29922;
+    --accent:#58a6ff;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --bg:#ffffff; --panel:#f6f8fa; --line:#d8dee4; --ink:#1f2328;
+      --dim:#59636e; --up:#1a7f37; --down:#cf222e; --warn:#9a6700;
+      --accent:#0969da;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 16px 80px}
+  h1{font-size:22px;margin:0 0 2px}
+  .sub{color:var(--dim);font-size:13px;margin:0 0 18px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px;
+    border-bottom:1px solid var(--line);padding-bottom:10px}
+  .tab{background:var(--panel);border:1px solid var(--line);color:var(--ink);
+    padding:7px 12px;border-radius:7px;cursor:pointer;font-size:13px;
+    white-space:nowrap}
+  .tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .tab .n{color:var(--dim);margin-left:6px;font-size:11px}
+  .tab.on .n{color:rgba(255,255,255,.8)}
+  .ctl{display:flex;gap:14px;flex-wrap:wrap;align-items:center;
+    margin:0 0 16px;font-size:13px;color:var(--dim)}
+  .ctl label{display:flex;gap:6px;align-items:center}
+  select{background:var(--panel);color:var(--ink);border:1px solid var(--line);
+    border-radius:6px;padding:5px 8px;font-size:13px}
+  .game{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:14px 16px;margin-bottom:10px}
+  .ghead{display:flex;justify-content:space-between;align-items:baseline;
+    gap:12px;flex-wrap:wrap;margin-bottom:10px}
+  .teams{font-weight:600}
+  .when{color:var(--dim);font-size:12px}
+  .mkts{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+    gap:10px}
+  .mkt{border:1px solid var(--line);border-radius:8px;padding:10px 11px}
+  .mkt h4{margin:0 0 7px;font-size:11px;text-transform:uppercase;
+    letter-spacing:.06em;color:var(--dim);font-weight:600}
+  .row{display:flex;justify-content:space-between;align-items:center;
+    gap:10px;padding:3px 0;font-variant-numeric:tabular-nums;font-size:13px}
+  .side{color:var(--dim);overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .nums{display:flex;gap:8px;align-items:center;white-space:nowrap}
+  .was{color:var(--dim);font-size:12px}
+  .mv{font-size:12px;font-weight:600}
+  .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--dim)}
+  .flags{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+  .flag{font-size:11.5px;padding:3px 8px;border-radius:999px;
+    border:1px solid var(--line);color:var(--dim)}
+  .flag.steam{border-color:var(--accent);color:var(--accent)}
+  .flag.key{border-color:var(--warn);color:var(--warn)}
+  .flag.outlier{border-color:var(--up);color:var(--up)}
+  .note{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:16px 18px;margin-top:26px;color:var(--dim);font-size:13px}
+  .note b{color:var(--ink)}
+  .empty{color:var(--dim);padding:28px 4px;text-align:center}
+  svg.spark{display:block;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Line Watch</h1>
+  <p class="sub" id="sub">Loading…</p>
+
+  <div class="tabs" id="tabs"></div>
+
+  <div class="ctl">
+    <label>Show
+      <select id="filter">
+        <option value="all">every game</option>
+        <option value="flagged" selected>only games with something flagged</option>
+        <option value="tracked">only games whose lines are being watched</option>
+      </select>
+    </label>
+    <label>Order by
+      <select id="order">
+        <option value="start">start time</option>
+        <option value="move">biggest move</option>
+        <option value="flags">most flags</option>
+      </select>
+    </label>
+    <span id="count"></span>
+  </div>
+
+  <div id="board"></div>
+
+  <div class="note" id="note"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const has = v => v !== null && v !== undefined && v === v;
+
+let INDEX = null, SPORT = null, DATA = null;
+
+// Market order is fixed rather than whatever the JSON happens to list, so the
+// same market sits in the same place on every card and the eye can scan down.
+const MARKET_ORDER = ["spreads", "totals", "h2h"];
+const MARKET_NAME = {spreads: "Spread", totals: "Total", h2h: "Moneyline"};
+
+// A moneyline is a price and a spread is a number of points. Printing -3.5
+// and -150 with the same formatter makes a half-point look like a price and a
+// price look like a line.
+function fmtVal(market, v){
+  if (!has(v)) return "—";
+  if (market === "h2h") return (v > 0 ? "+" : "") + Math.round(v);
+  return (v > 0 ? "+" : "") + (Math.round(v * 2) / 2).toFixed(1);
+}
+function fmtMove(market, v){
+  if (!has(v) || v === 0) return {txt: "no move", cls: "flat"};
+  const s = market === "h2h" ? Math.round(v) : (Math.round(v * 2) / 2).toFixed(1);
+  return {txt: (v > 0 ? "+" : "") + s, cls: v > 0 ? "up" : "down"};
+}
+function when(iso){
+  if (!iso) return "";
+  const t = new Date(iso);
+  if (isNaN(t)) return "";
+  const mins = Math.round((t - Date.now()) / 60000);
+  const clock = t.toLocaleString(undefined,
+    {weekday:"short", hour:"numeric", minute:"2-digit"});
+  if (mins < 0) return clock + " · in progress or done";
+  if (mins < 60) return clock + ` · in ${mins}m`;
+  if (mins < 60 * 36) return clock + ` · in ${Math.round(mins/60)}h`;
+  return clock;
+}
+
+// The sparkline. Deliberately unlabelled and deliberately small: it is there
+// to show the SHAPE of the move - one jump, a steady drift, a round trip -
+// next to the numbers that already say how far it went. A chart with axes
+// would be a bigger claim than this data supports.
+function spark(series, market){
+  if (!series || series.length < 2) return "";
+  const vals = series.map(p => p[1]).filter(has);
+  if (vals.length < 2) return "";
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const W = 190, H = 26, pad = 2;
+  const span = (hi - lo) || 1;
+  const pts = vals.map((v, i) => {
+    const x = pad + (W - 2 * pad) * (i / (vals.length - 1));
+    const y = H - pad - (H - 2 * pad) * ((v - lo) / span);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const rising = vals[vals.length - 1] >= vals[0];
+  const col = rising ? "var(--up)" : "var(--down)";
+  return `<svg class="spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"
+    role="img" aria-label="line history, ${esc(fmtVal(market, vals[0]))} to
+    ${esc(fmtVal(market, vals[vals.length-1]))}">
+    <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.6"
+      stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+
+function marketCard(market, sides){
+  const names = Object.keys(sides);
+  if (!names.length) return "";
+  const rows = names.map(n => {
+    const d = sides[n], mv = fmtMove(market, d.move);
+    return `<div class="row">
+        <span class="side" title="${esc(n)}">${esc(n)}</span>
+        <span class="nums">
+          <span class="was" title="the first line this site saw, not the
+            book's opener">${esc(fmtVal(market, d.first))}</span>
+          <span>→</span>
+          <b>${esc(fmtVal(market, d.now))}</b>
+          <span class="mv ${mv.cls}">${esc(mv.txt)}</span>
+        </span>
+      </div>`;
+  }).join("");
+  const first = sides[names[0]];
+  return `<div class="mkt"><h4>${esc(MARKET_NAME[market] || market)}</h4>
+    ${rows}${spark(first.series, market)}</div>`;
+}
+
+function gameCard(g){
+  const mkts = MARKET_ORDER.filter(m => g.lines && g.lines[m])
+    .map(m => marketCard(m, g.lines[m])).join("");
+  const flags = (g.flags || []).map(f =>
+    `<span class="flag ${esc(f.kind)}">${esc(f.text)}</span>`).join("");
+  return `<div class="game">
+      <div class="ghead">
+        <span class="teams">${esc(g.away)} @ ${esc(g.home)}</span>
+        <span class="when">${esc(when(g.start))}</span>
+      </div>
+      ${mkts ? `<div class="mkts">${mkts}</div>`
+             : `<div class="when">No line history yet — this game's odds have
+                not been polled. It is on the schedule either way.</div>`}
+      ${flags ? `<div class="flags">${flags}</div>` : ""}
+    </div>`;
+}
+
+function biggestMove(g){
+  let best = 0;
+  for (const m of Object.keys(g.lines || {})){
+    for (const s of Object.keys(g.lines[m])){
+      const v = g.lines[m][s].move;
+      // Scaled, because ten cents of moneyline and ten points of spread are
+      // not the same size of event and sorting them together unscaled would
+      // put every moneyline above every spread.
+      const scale = m === "h2h" ? 0.05 : 1;
+      if (has(v)) best = Math.max(best, Math.abs(v) * scale);
+    }
+  }
+  return best;
+}
+
+function draw(){
+  if (!DATA) return;
+  const f = $("filter").value, o = $("order").value;
+  let games = (DATA.games || []).slice();
+  if (f === "flagged") games = games.filter(g => (g.flags || []).length);
+  if (f === "tracked") games = games.filter(g => g.tracked);
+  if (o === "move") games.sort((a, b) => biggestMove(b) - biggestMove(a));
+  else if (o === "flags")
+    games.sort((a, b) => (b.flags || []).length - (a.flags || []).length);
+  else games.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+
+  $("count").textContent =
+    `${games.length} of ${(DATA.games || []).length} games`;
+  $("board").innerHTML = games.length ? games.map(gameCard).join("")
+    : `<div class="empty">Nothing matches that filter.
+       ${DATA.games && DATA.games.length
+         ? "Try “every game”." : "No games on the board for this sport."}</div>`;
+}
+
+async function loadSport(key){
+  SPORT = key;
+  for (const el of document.querySelectorAll(".tab"))
+    el.classList.toggle("on", el.dataset.key === key);
+  const row = (INDEX.sports || []).find(s => s.key === key);
+  try {
+    const r = await fetch(row.file + "?" + Date.now());
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    DATA = await r.json();
+  } catch (e) {
+    // A failed load has to SAY so. Left unhandled this is a blank board and
+    // an unhandled rejection in a console nobody has open.
+    $("board").innerHTML =
+      `<div class="empty">Could not load ${esc(row.file)} (${esc(e.message)}).
+       If the collector has just run, give the page a minute to redeploy.</div>`;
+    return;
+  }
+  draw();
+}
+
+async function boot(){
+  try {
+    INDEX = await (await fetch("data/index.json?" + Date.now())).json();
+  } catch (e) {
+    $("sub").textContent =
+      "No data published yet. Run the Watch workflow in Actions.";
+    return;
+  }
+  const sports = INDEX.sports || [];
+  if (!sports.length){
+    $("sub").textContent = "No sports have games on the board right now.";
+    return;
+  }
+  $("sub").textContent =
+    "Line movement only — no model, no projections. Updated "
+    + new Date(INDEX.updated).toLocaleString();
+  $("tabs").innerHTML = sports.map(s =>
+    `<button class="tab" data-key="${esc(s.key)}">${esc(s.title)}
+      <span class="n">${s.flagged || 0}/${s.games}</span></button>`).join("");
+  for (const el of document.querySelectorAll(".tab"))
+    el.onclick = () => loadSport(el.dataset.key);
+  $("filter").onchange = draw;
+  $("order").onchange = draw;
+  await loadSport(sports[0].key);
+}
+
+$("note").innerHTML = `
+  <b>What this is.</b> Every game on the board, and what its line has done
+  since this site first saw it. There is no model here and nothing is
+  predicted — each flag says what the market <i>did</i>, never what it will do.
+  <br><br>
+  <b>What it cannot see, and this is the important one.</b> Reverse line
+  movement — the line moving against where the public money is — is what most
+  people mean by an interesting move. It needs ticket and handle percentages,
+  and the odds feed behind this page does not carry them. Nothing here is
+  reverse line movement. A <span class="flag steam">steam</span> flag means
+  several books moved the same way quickly; whether the money behind it was
+  sharp is not visible from prices alone, and anyone telling you otherwise
+  from this data is guessing.
+  <br><br>
+  <b>"First seen" is not the opening line.</b> The true opener is whatever was
+  hung before this site was watching. Buying it costs ten times a normal call,
+  so the first number here is the first one this project caught — which is why
+  it is labelled that way rather than called an open.
+  <br><br>
+  <b>The flags.</b>
+  <span class="flag steam">steam</span> several books moving the same
+  direction inside the hour.
+  <span class="flag key">key number</span> a spread or total crossing a number
+  games actually land on — real in football, where margins pile up on 3 and 7,
+  and much weaker everywhere else.
+  <span class="flag outlier">outlier</span> one book sitting off the
+  consensus, which is the only flag here that is a bet rather than an
+  observation; usually it means that book is slow.
+  <span class="flag">frozen</span> a line that has not moved while the board
+  around it has.
+  <span class="flag">move</span> the distance from first seen to now.
+  <br><br>
+  <b>Not every game is watched.</b> The schedule comes from a free endpoint,
+  so every game in every sport appears. Odds cost credits, so a game with no
+  line history simply has not been polled — the budget went to games closer to
+  starting. That is a setting, not a failure.`;
+
+boot();
+</script>
+</body>
+</html>
