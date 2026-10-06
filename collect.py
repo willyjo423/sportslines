@@ -31,9 +31,41 @@ import config as C
 import odds as O
 import store as S
 
+SPEND_FILE = "spend.json"
+
 log = logging.getLogger("collect")
 
 LOOKAHEAD_HOURS = 48
+
+
+def _spend_today() -> int:
+    """How many credits today's earlier polls already used.
+
+    Kept in a file because each workflow run is a fresh container that
+    remembers nothing. Without it every poll would believe it was the first
+    of the day, and the pacing would release the same share forty-eight times
+    over - a budget that resets on every run is not a budget.
+    """
+    p = S.EVENTS.parent / SPEND_FILE
+    today = datetime.now(timezone.utc).date().isoformat()
+    if not p.exists():
+        return 0
+    try:
+        d = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return 0
+    # A new UTC day starts the count again, which is also what the API's own
+    # quota does NOT do - it resets monthly - so the account balance stays the
+    # backstop for the month and this only paces the day.
+    return int(d.get("spent", 0)) if d.get("date") == today else 0
+
+
+def _record_spend(used: int) -> None:
+    p = S.EVENTS.parent / SPEND_FILE
+    p.parent.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(timezone.utc).date().isoformat()
+    p.write_text(json.dumps({"date": today, "spent": _spend_today() + used},
+                            separators=(",", ":")))
 
 
 def _hours_to_first(events: list) -> float:
@@ -109,16 +141,49 @@ def plan(key: str, dry: bool = False) -> list:
     return live
 
 
+def focus(order: list, budget: O.Budget) -> list:
+    """When the allowance cannot cover everything, watch fewer things often.
+
+    This is the lesson of the first dry run. Six sports polled once a day is
+    six snapshots and NO line movement; one sport polled fifteen times is a
+    chart. Movement needs the same game seen repeatedly, so when the budget
+    is tight the collector sticks to the top `FOCUS` sports by config
+    priority rather than following whichever game happens to start soonest -
+    a different sport each poll builds no history at all.
+
+    Once the budget can afford every sport on every poll this does nothing,
+    which is the correct behaviour for a paid tier.
+    """
+    if not C.FOCUS or not order:
+        return order
+    full = sum(r["cost"] for r in order)
+    if budget.allows(full):
+        return order
+    by_priority = sorted(order, key=lambda r: (-r["priority"],
+                                               r["hours_to_first"]))
+    keep = {r["sport"] for r in by_priority[:C.FOCUS]}
+    return [r for r in order if r["sport"] in keep]
+
+
 def run(dry: bool = False) -> int:
     key = O.api_key()
-    budget = O.Budget(C.MONTHLY_CREDITS, C.BUDGET_USE)
+    budget = O.Budget(C.MONTHLY_CREDITS, C.BUDGET_USE,
+                      spent_today=_spend_today())
     log.info("budget: %s", budget)
 
     if not dry:
         save_catalogue(key)
     order = plan(key, dry=dry)
-    print(f"{len(order)} sport(s) with a game inside {LOOKAHEAD_HOURS}h, "
-          f"{budget.planned_today} credits for today")
+    all_n = len(order)
+    order = focus(order, budget)
+    print(f"{all_n} sport(s) with a game inside {LOOKAHEAD_HOURS}h; "
+          f"{budget.planned_today} credit(s) released for this poll "
+          f"(day's allowance {budget.daily}, {budget.spent_today} already "
+          f"used today)")
+    if len(order) < all_n:
+        print(f"  budget is tight, so this poll watches the top {len(order)} "
+              f"by priority rather than spreading thin - a sport polled once "
+              f"a day shows no movement at all")
     print(f"  {'sport':<32s} {'games':>6s} {'next':>8s} {'cost':>5s}  status")
 
     total_moves = 0
@@ -151,6 +216,7 @@ def run(dry: bool = False) -> int:
 
     print(f"\n{budget}")
     if not dry:
+        _record_spend(budget.spent)
         gone = S.prune(C.KEEP_DAYS)
         if gone:
             print(f"pruned {gone} day-file(s) past {C.KEEP_DAYS} days")
