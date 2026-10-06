@@ -33,6 +33,25 @@ MONTHLY_CREDITS = 500
 # and the rest is slack for manual runs and retries.
 BUDGET_USE = 0.90
 
+# How many times a day the workflow runs. The cron is "7,37 * * * *", so 48.
+# The collector needs this to PACE itself: without it the first run of the day
+# spends the whole allowance and the other forty-seven do nothing, which is
+# exactly what the first dry run of this project showed.
+POLLS_PER_DAY = 48
+
+# WHEN THE BUDGET IS TIGHT, WATCH FEWER THINGS PROPERLY.
+#
+# Line movement needs the SAME game seen repeatedly. Fifteen credits spent on
+# six sports once a day buys six snapshots and no movement at all; spent on
+# one sport it buys a chart. So when the day's allowance cannot cover every
+# sport on every poll, the collector sticks to the top `FOCUS` sports by
+# priority rather than chasing whichever game starts soonest - consistency is
+# what makes a history, and a different sport each poll makes none.
+#
+# Set it to 0 to always try every sport, which is the right setting once the
+# budget is large enough to afford them all.
+FOCUS = 1
+
 # ------------------------------------------------------------- what to watch
 # Sport keys are The Odds API's own (`/v4/sports` lists them all, free).
 #
