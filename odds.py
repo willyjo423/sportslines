@@ -35,23 +35,45 @@ class OddsError(RuntimeError):
 
 
 class Budget:
-    """How many credits today may spend, and what is left of them.
+    """How many credits this POLL may spend, not this day.
 
-    Two numbers bound it and the SMALLER always wins:
+    The first dry run of this project reported "15 of 15 credits used today,
+    0 left" on its very first poll - the whole day's allowance gone in one
+    run, with forty-seven more runs scheduled behind it that could do nothing.
+    A daily budget spent greedily is not a budget, it is a race.
 
-      the plan      what config says you pay for, divided across the month
-      the account   `x-requests-remaining`, which the API returns on every
-                    costed call and which is the truth
+    So the allowance is PACED. At any moment the day is some fraction
+    through, and this run may spend up to that fraction of the day's total,
+    less whatever has already gone. That makes a small budget drip through the
+    day instead of emptying at midnight, and leaves a large one effectively
+    unconstrained - at 100,000 credits the pro-rata share of any single poll
+    is far more than a poll costs.
 
-    Trusting only the first would overspend a real account whose month is
-    nearly up. Trusting only the second would spend March's allowance in the
-    first week, because on the 1st it reads as the whole month. Both.
+    Three numbers bound it and the SMALLEST always wins:
+
+      the plan        config's monthly figure, divided across the month
+      the pace        how much of today's share the clock has released
+      the account     `x-requests-remaining`, which the API returns and which
+                      is the only one of the three that is actually true
     """
 
-    def __init__(self, monthly: int, use: float = 0.9, days_in_month: int = 30):
-        self.planned_today = max(1, int(monthly * use / days_in_month))
+    def __init__(self, monthly: int, use: float = 0.9, days_in_month: int = 30,
+                 spent_today: int = 0, now=None):
+        from datetime import datetime, timezone
+        self.daily = max(1, int(monthly * use / days_in_month))
+        self.spent_today = int(spent_today)
         self.spent = 0
-        self.remaining_account = None          # filled in by the first call
+        self.remaining_account = None
+
+        now = now or datetime.now(timezone.utc)
+        # How far through the UTC day we are. The first poll after midnight
+        # gets a small share, the last gets all of it.
+        frac = (now.hour * 3600 + now.minute * 60 + now.second) / 86400.0
+        # One poll's worth of head start, so the day's first run is not
+        # pinned to zero and able to do nothing at all.
+        head = self.daily / max(1, _polls_per_day())
+        self.released = min(self.daily, self.daily * frac + head)
+        self.planned_today = max(0, int(self.released) - self.spent_today)
 
     def allows(self, cost: int) -> bool:
         if self.spent + cost > self.planned_today:
@@ -70,11 +92,20 @@ class Budget:
                 pass
 
     def __str__(self) -> str:
-        left = self.planned_today - self.spent
         acct = ("unknown" if self.remaining_account is None
                 else f"{self.remaining_account:,}")
-        return (f"{self.spent} of {self.planned_today} credits used today, "
-                f"{left} left; account balance {acct}")
+        return (f"{self.spent} credit(s) this poll; "
+                f"{self.spent_today + self.spent} of {self.daily} used today; "
+                f"{self.planned_today - self.spent} released and unspent; "
+                f"account balance {acct}")
+
+
+def _polls_per_day() -> int:
+    try:
+        import config as C
+        return max(1, int(getattr(C, "POLLS_PER_DAY", 48)))
+    except Exception:                                          # noqa: BLE001
+        return 48
 
 
 def _redact(text: str, key: str | None) -> str:
