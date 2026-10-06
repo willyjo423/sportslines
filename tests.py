@@ -199,13 +199,42 @@ def main() -> int:
 
     # --- the budget ---------------------------------------------------
     import odds as O
-    b = O.Budget(500, 0.9)
-    check("the free tier plans about 15 credits a day",
-          13 <= b.planned_today <= 16, f"{b.planned_today}")
-    b.charge(b.planned_today)
-    check("and refuses to go past it", not b.allows(1))
+    import config as C
+    noon = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
+    b = O.Budget(500, 0.9, now=noon)
+    check("the free tier's day is about 15 credits",
+          13 <= b.daily <= 16, f"{b.daily} a day")
 
-    b2 = O.Budget(100_000, 0.9)
+    # THE BUG A DRY RUN FOUND. The first version released the whole day's
+    # allowance to the first poll, which spent it and left forty-seven runs
+    # with nothing. Half way through the day only about half should be out.
+    check("by midday only about half the day's credits are released",
+          0.4 * b.daily <= b.planned_today <= 0.65 * b.daily,
+          f"{b.planned_today} of {b.daily} released at 12:00 UTC")
+    early = O.Budget(500, 0.9, now=noon.replace(hour=1))
+    check("and at 01:00 only a poll's worth is",
+          early.planned_today <= max(1, b.daily // 4),
+          f"{early.planned_today} released at 01:00 UTC")
+
+    # Paced across a whole day it must spend the allowance and not a credit
+    # more - the property that actually protects the account.
+    spent = 0
+    buying = 0
+    for i in range(C.POLLS_PER_DAY):
+        t = noon.replace(hour=0, minute=0) + timedelta(minutes=30 * i + 7)
+        bb = O.Budget(500, 0.9, spent_today=spent, now=t)
+        got = 0
+        while bb.allows(1):
+            bb.charge(1)
+            got += 1
+        spent += got
+        buying += 1 if got else 0
+    check("a full day of polls spends the allowance and no more",
+          spent <= b.daily, f"{spent} spent against an allowance of {b.daily}")
+    check("and spreads it over the day instead of emptying at midnight",
+          buying >= 8, f"{buying} of {C.POLLS_PER_DAY} polls bought data")
+
+    b2 = O.Budget(100_000, 0.9, now=noon)
     b2.charge(1, remaining=4)
     # The account balance is the truth and must win over the plan, or the last
     # days of a month quietly overspend.
