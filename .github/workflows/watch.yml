@@ -1,0 +1,103 @@
+# Poll the lines, record what moved, rebuild the page.
+#
+# THE SCHEDULE IS NOT ON THE HALF HOUR, on purpose. Almost every cron on
+# GitHub is written for :00 and :30, the fleet is busiest exactly then, and
+# scheduled runs are best-effort - they queue behind everyone else's and can
+# arrive ten or twenty minutes late. :07 and :37 are just as often and far
+# less contended.
+#
+# A SCHEDULED WORKFLOW IS DISABLED AFTER 60 DAYS of no repository activity.
+# This one commits on most runs, which counts as activity, so it keeps itself
+# alive - but an off-season with nothing to record could still trip it. If the
+# site goes quiet, check Actions for a disabled-workflow notice before
+# assuming the collector broke.
+name: Watch
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan only - show what it would poll and what that costs, spend nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  # Two runs committing to data/ at once is a push race, and the loser's
+  # poll is simply lost. Never cancel one in progress: it may already have
+  # spent credits, and throwing away a paid-for poll is the one thing worse
+  # than waiting.
+  group: watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # The instrument before the data. These run against fixtures and make
+      # no network calls, so they cost nothing and they fail before a bad
+      # parser gets a chance to write rubbish into the history.
+      - name: Check the collector against fixtures
+        run: python tests.py
+
+      - name: Poll
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python collect.py --dry-run | tee run.txt
+          else
+            python collect.py | tee run.txt
+          fi
+
+      - name: Rebuild the page data
+        if: ${{ inputs.dry_run != true }}
+        run: python publish.py | tee -a run.txt
+
+      - name: Commit what changed
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          git config user.name  "line-watch"
+          git config user.email "noreply@github.com"
+          git add data docs/data
+          # A poll where no line moved is a NORMAL outcome, not a failure.
+          # `git commit` exits non-zero on an empty staging area, which with
+          # `set -e` would mark a perfectly good run as failed.
+          if git diff --cached --quiet; then
+            echo "nothing moved this poll - no commit"
+          else
+            git commit -m "lines: $(date -u +'%Y-%m-%d %H:%M')Z"
+            # The schedule can overlap a manual run despite the concurrency
+            # group, and a rejected push would silently lose this poll.
+            for i in 1 2 3; do
+              git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && \
+              git push origin "HEAD:${GITHUB_REF_NAME}" && break
+              echo "push attempt $i failed, retrying"
+              sleep $((i * 5))
+            done
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Line Watch'
+            echo '```'
+            cat run.txt 2>/dev/null || echo "(no output)"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
