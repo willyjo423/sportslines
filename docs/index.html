@@ -31,6 +31,11 @@
   .tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .tab .n{color:var(--dim);margin-left:6px;font-size:11px}
   .tab.on .n{color:rgba(255,255,255,.8)}
+  .tab.top{border-color:var(--accent);font-weight:600}
+  .rank{display:inline-block;min-width:1.6em;color:var(--dim);
+    font-variant-numeric:tabular-nums}
+  .norm{color:var(--accent);font-weight:600;font-size:12px}
+  .toprow .row{padding-top:2px}
   .tab.untracked{opacity:.62}
   .tab.untracked .n{font-style:italic}
   .ctl{display:flex;gap:14px;flex-wrap:wrap;align-items:center;
@@ -78,6 +83,7 @@
   <div class="tabs" id="tabs"></div>
 
   <div class="ctl">
+    <span id="ctl-normal" style="display:contents">
     <label>Show
       <select id="filter">
         <option value="all">every game</option>
@@ -92,6 +98,7 @@
         <option value="flags">most flags</option>
       </select>
     </label>
+    </span>
     <span id="count"></span>
   </div>
 
@@ -248,8 +255,194 @@ function draw(){
        history — try <b>every game</b>.`}</div>`;
 }
 
+// ---------------------------------------------------------------- TOP MOVES
+// One ranked list across every sport, for the day.
+//
+// THE HARD PART IS THE SCALE, not the sorting. A 1.0 move is enormous on a
+// point spread and routine on a moneyline price - measured on a real board,
+// the 90th-percentile NCAAF spread move was 0.5 points while the 90th
+// percentile h2h move was 25 cents. Ranking raw size across sports would
+// produce a moneyline leaderboard and nothing else.
+//
+// So every move is divided by what a move NORMALLY is for that sport and
+// market, worked out from the board's own data. The number you sort on is
+// "how many typical moves is this", which compares across sports because the
+// units cancel.
+//
+// WHAT THIS IS NOT: a prediction. It ranks by how UNUSUAL a move is, and
+// nobody has yet measured whether unusual moves predict anything - that is
+// what grade.py is for. Read it as "where did the market do something odd
+// today", not "where is the bet".
+// A MONEYLINE IS SCORED IN PROBABILITY, NOT IN CENTS. This matters more than
+// anything else here. A price going -2000 to -2500 is five hundred cents and
+// nine tenths of one percentage point of probability; -110 to -160 is fifty
+// cents and NINE points. Ranking by cents put a parade of enormous favourites
+// at the top of this list and buried every meaningful move - the first build
+// of this tab had seven moneylines in its top eight and covered two sports.
+//
+// Converting to implied probability makes moneyline moves comparable with
+// each other, which is the whole job.
+function impliedProb(american){
+  if (!Number.isFinite(american) || american === 0) return null;
+  return american < 0 ? (-american) / ((-american) + 100)
+                      : 100 / (american + 100);
+}
+
+// How much a line moved, in units that mean the same thing within a market:
+// points for a spread or total, PERCENTAGE POINTS OF PROBABILITY for a price.
+function moveSize(market, first, now){
+  if (!has(first) || !has(now)) return null;
+  if (market !== "h2h") return now - first;
+  const a = impliedProb(first), b = impliedProb(now);
+  return (a === null || b === null) ? null : (b - a) * 100;
+}
+
+// Fallbacks for when a market has too few moves to calibrate itself. h2h is
+// in probability points now, so 2 points - not 10 cents.
+const FALLBACK_SCALE = {spreads: 0.5, totals: 0.5, h2h: 2};
+
+function scaleFor(moves, market){
+  // The typical NON-ZERO move. Zeros are most of the board - lines that have
+  // not moved - and including them would drag the scale toward nothing and
+  // make every small move look enormous.
+  const nz = moves.filter(v => Number.isFinite(v) && Math.abs(v) > 0)
+                  .map(Math.abs).sort((a,b) => a - b);
+  const fall = FALLBACK_SCALE[market] || 1;
+  if (nz.length < 6) return fall;          // too thin to calibrate
+  const med = nz[Math.floor(nz.length / 2)];
+  // Never let the scale collapse below the fallback, or one quiet sport
+  // sends its own rounding noise to the top of the list.
+  return Math.max(med, fall);
+}
+
+function rankMoves(bySport){
+  // Pool every move by sport+market to work out the scales.
+  const pool = {};
+  for (const [key, data] of Object.entries(bySport)){
+    for (const g of data.games || []){
+      for (const [mk, sides] of Object.entries(g.lines || {})){
+        for (const v of Object.values(sides)){
+          const d = moveSize(mk, v.first, v.now);
+          if (d === null) continue;
+          (pool[key + "|" + mk] = pool[key + "|" + mk] || []).push(d);
+        }
+      }
+    }
+  }
+  const scales = {};
+  for (const [k, vals] of Object.entries(pool))
+    scales[k] = scaleFor(vals, k.split("|")[1]);
+
+  const rows = [];
+  for (const [key, data] of Object.entries(bySport)){
+    for (const g of data.games || []){
+      for (const [mk, sides] of Object.entries(g.lines || {})){
+        for (const [side, v] of Object.entries(sides)){
+          const d = moveSize(mk, v.first, v.now);
+          if (d === null || d === 0) continue;
+          const sc = scales[key + "|" + mk] || FALLBACK_SCALE[mk] || 1;
+          const norm = Math.abs(d) / sc;
+          // Book agreement is a TIE-BREAK, not a multiplier.
+          //
+          // It was a multiplier at first, and that made the list look broken:
+          // the page sorts on one number and showed another, so a 3.0x row
+          // with six books sat above a 3.5x row with three and the ordering
+          // read as a bug. Whatever number is printed has to be the number
+          // that sorted the list.
+          rows.push({
+            sport: data.title || key, key, game: g, market: mk, side,
+            first: v.first, now: v.now, move: v.move, sized: d,
+            books: v.books,
+            norm,
+            flags: (g.flags || []).filter(f =>
+              f.text && f.text.includes(mk)),
+          });
+        }
+      }
+    }
+  }
+  // Sorted on exactly the figure the row displays, with book agreement
+  // only separating ties.
+  rows.sort((a, b) => (b.norm - a.norm) || ((b.books || 0) - (a.books || 0)));
+  // ONE ROW PER GAME AND MARKET. Both sides of a total move together and the
+  // two sides of a spread are mirror images, so every line produced two
+  // near-identical rows and a single game could occupy four of the top eight
+  // places. Keeping the best-scoring side halves the list and lets other
+  // games onto it.
+  const seen = new Set();
+  return rows.filter(r => {
+    const k = r.key + "|" + (r.game.id || "") + "|" + r.market;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function topRow(r, i){
+  const mv = fmtMove(r.market, r.move);
+  const fl = r.flags.slice(0, 3).map(f =>
+    `<span class="flag ${esc(f.kind)}">${esc(f.kind)}</span>`).join("");
+  return `<div class="game toprow">
+      <div class="ghead">
+        <span class="teams"><span class="rank">${i + 1}</span>
+          ${esc(r.game.away)} @ ${esc(r.game.home)}</span>
+        <span class="when">${esc(r.sport)} · ${esc(when(r.game.start))}</span>
+      </div>
+      <div class="row">
+        <span class="side">${esc(MARKET_NAME[r.market] || r.market)}
+          — ${esc(r.side)}</span>
+        <span class="nums">
+          <span class="was">${esc(fmtVal(r.market, r.first))}</span>
+          <span>→</span><b>${esc(fmtVal(r.market, r.now))}</b>
+          <span class="mv ${mv.cls}">${esc(mv.txt)}</span>
+          ${r.market === "h2h"
+            ? `<span class="was" title="the move in implied probability, which
+                is what a price change actually means">${
+                r.sized > 0 ? "+" : ""}${r.sized.toFixed(1)}pts</span>` : ""}
+          <span class="norm" title="how many typical moves for this sport and
+            market — the number the list is sorted by">${r.norm.toFixed(1)}x</span>
+        </span>
+      </div>
+      ${fl ? `<div class="flags">${fl}
+        <span class="flag">${r.books || "?"} books</span></div>` : ""}
+    </div>`;
+}
+
+let TOPCACHE = null;
+async function loadTop(){
+  for (const el of document.querySelectorAll(".tab"))
+    el.classList.toggle("on", el.dataset.key === "__top");
+  $("ctl-normal").hidden = true;
+  $("board").innerHTML = `<div class="empty">Reading every sport…</div>`;
+  if (!TOPCACHE){
+    const sports = (INDEX.sports || []).filter(s => s.tracked);
+    const got = await Promise.all(sports.map(async s => {
+      try {
+        const r = await fetch(s.file + "?" + Date.now());
+        return r.ok ? [s.key, await r.json()] : null;
+      } catch (e) { return null; }
+    }));
+    TOPCACHE = Object.fromEntries(got.filter(Boolean));
+  }
+  const rows = rankMoves(TOPCACHE);
+  $("count").textContent = `${rows.length} moves across `
+    + `${Object.keys(TOPCACHE).length} sports`;
+  $("board").innerHTML = rows.length
+    ? `<div class="note" style="margin:0 0 14px">
+         <b>Ranked by how unusual the move is, not by whether it predicts
+         anything.</b> Each move is divided by what a move normally is for
+         that sport and market — the <b>x</b> figure — because a point is
+         enormous on a spread and nothing on a price. Nothing here has been
+         graded yet; <code>grade.py</code> is what will say whether any of it
+         is worth acting on.
+       </div>` + rows.slice(0, 40).map(topRow).join("")
+    : `<div class="empty">No line has moved yet. Come back after the next
+       pass — a first sighting has nothing to compare against.</div>`;
+}
+
 async function loadSport(key){
   SPORT = key;
+  $("ctl-normal").hidden = false;
   for (const el of document.querySelectorAll(".tab"))
     el.classList.toggle("on", el.dataset.key === key);
   const row = (INDEX.sports || []).find(s => s.key === key);
@@ -288,7 +481,10 @@ async function boot(){
   // "0/46" next to one reading "49/66" is the difference between a sport the
   // budget is tracking and one it is only listing, and that distinction is
   // the single most confusing thing about running this on a small plan.
-  $("tabs").innerHTML = sports.map(s =>
+  // The cross-sport tab is pinned first and is not a sport, so it carries no
+  // tracked/flagged count - those are per-sport ideas.
+  $("tabs").innerHTML = `<button class="tab top" data-key="__top">Top moves
+      <span class="n">all sports</span></button>` + sports.map(s =>
     `<button class="tab${s.tracked ? "" : " untracked"}" data-key="${esc(s.key)}"
       title="${s.tracked ? `${s.tracked} of ${s.games} games have line history`
                          : "schedule only - the budget has not bought this sport's odds"}"
@@ -296,10 +492,13 @@ async function boot(){
       <span class="n">${s.tracked ? (s.flagged || 0) + "/" + s.games
                                   : "schedule"}</span></button>`).join("");
   for (const el of document.querySelectorAll(".tab"))
-    el.onclick = () => loadSport(el.dataset.key);
+    el.onclick = () => (el.dataset.key === "__top" ? loadTop()
+                                                  : loadSport(el.dataset.key));
   $("filter").onchange = draw;
   $("order").onchange = draw;
-  await loadSport(sports[0].key);
+  // Opens on the cross-sport list, because "what moved today" is the
+  // question the page exists to answer; a single sport is the follow-up.
+  await loadTop();
 }
 
 $("note").innerHTML = `
