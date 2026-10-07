@@ -200,7 +200,14 @@ def main() -> int:
     # --- the budget ---------------------------------------------------
     import odds as O
     import config as C
-    noon = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
+    # ANCHORED TO THE BUDGET DAY, not to midnight UTC. These checks used a
+    # fixed 12:00 UTC as "midday" and started failing the moment the budget
+    # day was moved to 4am Eastern - the tests were measuring the old design,
+    # not a regression in the new one. A check pinned to a constant the code
+    # no longer uses is worse than no check.
+    DAY0 = datetime(2026, 10, 6, C.BUDGET_DAY_START_UTC, 0,
+                    tzinfo=timezone.utc)
+    noon = DAY0 + timedelta(hours=12)
     b = O.Budget(500, 0.9, now=noon)
     check("the free tier's day is about 15 credits",
           13 <= b.daily <= 16, f"{b.daily} a day")
@@ -210,18 +217,18 @@ def main() -> int:
     # with nothing. Half way through the day only about half should be out.
     check("by midday only about half the day's credits are released",
           0.4 * b.daily <= b.planned_today <= 0.65 * b.daily,
-          f"{b.planned_today} of {b.daily} released at 12:00 UTC")
-    early = O.Budget(500, 0.9, now=noon.replace(hour=1))
-    check("and at 01:00 only a poll's worth is",
+          f"{b.planned_today} of {b.daily} released at the day's midpoint")
+    early = O.Budget(500, 0.9, now=DAY0 + timedelta(hours=1))
+    check("and an hour into the budget day only a poll's worth is",
           early.planned_today <= max(1, b.daily // 4),
-          f"{early.planned_today} released at 01:00 UTC")
+          f"{early.planned_today} released one hour in")
 
     # Paced across a whole day it must spend the allowance and not a credit
     # more - the property that actually protects the account.
     spent = 0
     buying = 0
     for i in range(C.POLLS_PER_DAY):
-        t = noon.replace(hour=0, minute=0) + timedelta(minutes=30 * i + 7)
+        t = DAY0 + timedelta(minutes=30 * i + 7)
         bb = O.Budget(500, 0.9, spent_today=spent, now=t)
         got = 0
         while bb.allows(1):
@@ -231,8 +238,62 @@ def main() -> int:
         buying += 1 if got else 0
     check("a full day of polls spends the allowance and no more",
           spent <= b.daily, f"{spent} spent against an allowance of {b.daily}")
-    check("and spreads it over the day instead of emptying at midnight",
-          buying >= 8, f"{buying} of {C.POLLS_PER_DAY} polls bought data")
+    # The point is that it is SPREAD, not that it is frequent - how many polls
+    # buy anything depends on what a poll costs, and on the free tier that is
+    # a handful either way.
+    check("and spreads it over the day instead of emptying at the reset",
+          buying >= 4 and buying < C.POLLS_PER_DAY,
+          f"{buying} of {C.POLLS_PER_DAY} polls bought data")
+
+    # --- IMMINENCE BEATS PREFERENCE ----------------------------------
+    # The real board on a Wednesday in October: MLB playoff games in three
+    # hours, NFL not until Thursday night. Sorting by config priority alone
+    # spent the whole day's credits on a line that would not move for a day
+    # and a half.
+    import collect as CO
+    board = [
+        {"sport": "baseball_mlb", "hours_to_first": 3.4, "priority": 75,
+         "cost": 3, "events": 4},
+        {"sport": "americanfootball_ncaaf", "hours_to_first": 6.4,
+         "priority": 90, "cost": 3, "events": 66},
+        {"sport": "americanfootball_nfl", "hours_to_first": 31.7,
+         "priority": 100, "cost": 3, "events": 29},
+    ]
+    tight = O.Budget(500, 0.9, now=noon)
+    picked = CO.focus(board, tight)
+    check("a tight budget watches tonight's games, not Thursday's",
+          len(picked) == 1 and picked[0]["sport"] == "baseball_mlb",
+          f"{[r['sport'] for r in picked]}")
+
+    # Within one band, preference is what decides - NCAAF over NHL at the
+    # same hour, because that is what `priority` is for.
+    same_band = [
+        {"sport": "icehockey_nhl", "hours_to_first": 6.9, "priority": 80,
+         "cost": 3, "events": 14},
+        {"sport": "americanfootball_ncaaf", "hours_to_first": 6.4,
+         "priority": 90, "cost": 3, "events": 66},
+    ]
+    # A GENUINELY tight budget. The first version of this check used the
+    # midday one, which could afford both sports at six credits - so focus()
+    # correctly returned both and the check called that a failure. The budget
+    # has to actually be unable to cover the board or there is nothing to
+    # focus.
+    very_tight = O.Budget(500, 0.9, now=DAY0 + timedelta(hours=2))
+    picked = CO.focus(same_band, very_tight)
+    check("inside one band, priority still decides",
+          len(picked) == 1 and picked[0]["sport"] == "americanfootball_ncaaf",
+          f"{[r['sport'] for r in picked]}")
+
+    # Everything far away must still produce a pick, not an empty poll.
+    far = [{"sport": "boxing_boxing", "hours_to_first": 70.0, "priority": 25,
+            "cost": 1, "events": 33}]
+    check("nothing inside any band still picks something",
+          len(CO.focus(far, very_tight)) == 1)
+
+    # And a budget that can afford the lot must not narrow anything.
+    rich = O.Budget(100_000, 0.9, now=noon)
+    check("a budget that can afford everything focuses on nothing",
+          len(CO.focus(board, rich)) == len(board))
 
     b2 = O.Budget(100_000, 0.9, now=noon)
     b2.charge(1, remaining=4)
