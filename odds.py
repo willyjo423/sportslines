@@ -60,15 +60,24 @@ class Budget:
     def __init__(self, monthly: int, use: float = 0.9, days_in_month: int = 30,
                  spent_today: int = 0, now=None):
         from datetime import datetime, timezone
-        self.daily = max(1, int(monthly * use / days_in_month))
+        # An explicit daily figure wins over the monthly one. See
+        # config.DAILY_CREDITS - it is the knob for a fixed pot of credits
+        # spread over a fixed number of days, which the monthly division
+        # cannot express.
+        fixed = _daily_override()
+        self.daily = (max(1, int(fixed)) if fixed
+                      else max(1, int(monthly * use / days_in_month)))
         self.spent_today = int(spent_today)
         self.spent = 0
         self.remaining_account = None
 
         now = now or datetime.now(timezone.utc)
-        # How far through the UTC day we are. The first poll after midnight
-        # gets a small share, the last gets all of it.
-        frac = (now.hour * 3600 + now.minute * 60 + now.second) / 86400.0
+        # How far through the BUDGET day we are - which does not start at
+        # midnight UTC. See config.BUDGET_DAY_START_UTC.
+        start = _day_start_utc()
+        secs = (now.hour * 3600 + now.minute * 60 + now.second
+                - start * 3600) % 86400
+        frac = secs / 86400.0
         # One poll's worth of head start, so the day's first run is not
         # pinned to zero and able to do nothing at all.
         head = self.daily / max(1, _polls_per_day())
@@ -98,6 +107,36 @@ class Budget:
                 f"{self.spent_today + self.spent} of {self.daily} used today; "
                 f"{self.planned_today - self.spent} released and unspent; "
                 f"account balance {acct}")
+
+
+def _daily_override():
+    try:
+        import config as C
+        v = getattr(C, "DAILY_CREDITS", None)
+        return None if v in (None, 0) else int(v)
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def _day_start_utc() -> int:
+    try:
+        import config as C
+        return int(getattr(C, "BUDGET_DAY_START_UTC", 0)) % 24
+    except Exception:                                          # noqa: BLE001
+        return 0
+
+
+def budget_day(now=None) -> str:
+    """Which budget day a moment belongs to, as a date string.
+
+    Shifted by the same anchor the pacing uses. If the spend file keyed on
+    the UTC date while the pacing ran on an Eastern day, the two would
+    disagree for eight hours out of every twenty-four and the allowance would
+    reset mid-afternoon.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = now or datetime.now(timezone.utc)
+    return (now - timedelta(hours=_day_start_utc())).date().isoformat()
 
 
 def _polls_per_day() -> int:
