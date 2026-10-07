@@ -35,7 +35,8 @@ SPEND_FILE = "spend.json"
 
 log = logging.getLogger("collect")
 
-LOOKAHEAD_HOURS = 48
+# Read from config so there is ONE place that decides what gets paid for.
+LOOKAHEAD_HOURS = getattr(C, "LOOKAHEAD_HOURS", 48)
 
 
 def _spend_today() -> int:
