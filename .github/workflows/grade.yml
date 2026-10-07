@@ -1,0 +1,63 @@
+# Do the flags predict anything? Run this, not the page, to decide.
+#
+# Actions -> "grade the flags" -> Run workflow. It reads the change log that
+# is already committed, downloads nothing, costs no credits, and cannot touch
+# the collector or the page.
+#
+# It will say "not enough yet" until there are finished games with lines
+# recorded before they started - a few days of collecting, more if the board
+# is thin. That is the correct answer early on, and far better than a
+# confident number off forty rows.
+name: grade the flags
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "how much history to grade"
+        default: "30"
+  schedule:
+    # Once a week, Monday 13:11 UTC (9:11am Eastern), after a full weekend of
+    # football has finished and settled. Off the hour and off the half hour
+    # because that is where the runner fleet is least busy.
+    - cron: "11 13 * * 1"
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # The instrument before the data, as everywhere else in this repo.
+      # Seven cases: a market where agreement means nothing and the grader
+      # must find nothing, one where it is real and the grader must find it,
+      # an odd book that is stale and one that is early, no look-ahead, and
+      # a refusal to answer on thin data. If it cannot tell those apart,
+      # every number below is decoration.
+      - name: Check the grader against known answers
+        run: python grade.py --self-test
+
+      - name: Grade
+        run: python grade.py --days "${{ inputs.days }}" | tee grade.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Do the flags predict anything?'
+            echo '```'
+            cat grade.txt 2>/dev/null || echo "(no output)"
+            echo '```'
+            echo 'Read the interval, not the number. One that crosses zero'
+            echo 'means the flag does not beat an ordinary move, and the'
+            echo 'flag should come off the page.'
+          } >> $GITHUB_STEP_SUMMARY
