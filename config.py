@@ -33,11 +33,22 @@ MONTHLY_CREDITS = 500
 # and the rest is slack for manual runs and retries.
 BUDGET_USE = 0.90
 
+# SPEND EXACTLY THIS MANY CREDITS A DAY, overriding the monthly figure above.
+#
+# `MONTHLY_CREDITS / 30` is the right default for an open-ended subscription,
+# and the wrong one for "I have 500 credits and I want seven days out of
+# them". Set this and the arithmetic is yours: 500 credits over 7 days is
+# about 70 a day, and a full-board poll of tonight's eight sports costs 20,
+# so that is three complete passes a day with slack.
+#
+# None means "work it out from MONTHLY_CREDITS".
+DAILY_CREDITS = 70
+
 # How many times a day the workflow runs. The cron is "7,37 * * * *", so 48.
 # The collector needs this to PACE itself: without it the first run of the day
 # spends the whole allowance and the other forty-seven do nothing, which is
 # exactly what the first dry run of this project showed.
-POLLS_PER_DAY = 48
+POLLS_PER_DAY = 3
 
 # WHEN THE BUDGET DAY STARTS, in UTC hours. 8 is 4am Eastern.
 #
@@ -60,7 +71,10 @@ BUDGET_DAY_START_UTC = 8
 #
 # Set it to 0 to always try every sport, which is the right setting once the
 # budget is large enough to afford them all.
-FOCUS = 1
+# 0 means never narrow - every sport on the board gets polled every time.
+# That is the right setting once the plan can afford it, and at the 100K tier
+# peak season runs about 42% of the allowance, so it can.
+FOCUS = 0
 
 # IMMINENCE BEATS PREFERENCE. Hours-to-first-game bands, soonest first.
 #
@@ -146,15 +160,24 @@ KEY_NUMBERS = {
 
 # How many books have to move the same way, inside the window, before it is
 # steam rather than one trader with a view.
+# AT THREE POLLS A DAY, A ONE-HOUR WINDOW CAN NEVER CONTAIN TWO
+# OBSERVATIONS, so a 60-minute steam window would mean steam never fires -
+# and a flag that never fires is indistinguishable, on the page, from one
+# that looked and found nothing. Widened to span the gap between polls, so
+# "steam" here means several books moved the same way BETWEEN consecutive
+# passes. Coarser than the real thing, and honest about it.
+# Back to 60 when polling every 30 minutes.
 STEAM_BOOKS = 3
-STEAM_WINDOW_MIN = 60
+STEAM_WINDOW_MIN = 420
 
 # How far off the consensus a book has to sit before it is worth pointing at.
 OUTLIER_MIN = {"spreads": 1.0, "totals": 1.0, "h2h": 20}
 
 # How long a line can sit unchanged, while its neighbours move, before that
 # itself is the observation.
-FREEZE_HOURS = 6
+# Same reasoning: at six-hour gaps, "has not moved in six hours" is mostly a
+# statement about how often we looked.
+FREEZE_HOURS = 18
 
 # ------------------------------------------------------------------ keeping
 # Days of change history to keep per sport. A year of changes is tens of
