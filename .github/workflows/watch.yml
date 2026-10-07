@@ -15,7 +15,13 @@ name: Watch
 
 on:
   schedule:
-    - cron: "7,37 * * * *"
+    # THREE PASSES A DAY, sized to the free plan: 09:11, 15:11 and 19:11
+    # Eastern. Morning catches the overnight drift, afternoon catches the
+    # day's move, evening catches the run-up to the games that start first.
+    # All three fall inside the same budget day (which starts 4am Eastern),
+    # so the allowance is spent on one board rather than split across two.
+    # Back to "7,37 * * * *" when the plan can afford every half hour.
+    - cron: "11 13,19,23 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
