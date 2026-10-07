@@ -31,6 +31,8 @@
   .tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .tab .n{color:var(--dim);margin-left:6px;font-size:11px}
   .tab.on .n{color:rgba(255,255,255,.8)}
+  .tab.untracked{opacity:.62}
+  .tab.untracked .n{font-style:italic}
   .ctl{display:flex;gap:14px;flex-wrap:wrap;align-items:center;
     margin:0 0 16px;font-size:13px;color:var(--dim)}
   .ctl label{display:flex;gap:6px;align-items:center}
@@ -228,10 +230,22 @@ function draw(){
 
   $("count").textContent =
     `${games.length} of ${(DATA.games || []).length} games`;
-  $("board").innerHTML = games.length ? games.map(gameCard).join("")
-    : `<div class="empty">Nothing matches that filter.
-       ${DATA.games && DATA.games.length
-         ? "Try “every game”." : "No games on the board for this sport."}</div>`;
+  if (games.length) { $("board").innerHTML = games.map(gameCard).join(""); return; }
+  // AN EMPTY BOARD HAS TO SAY WHY. "Nothing matches that filter" is true and
+  // useless when the real reason is that this sport has a schedule and no
+  // odds, which is a budget setting rather than a fault.
+  const total = (DATA.games || []).length;
+  const tracked = (DATA.games || []).filter(g => g.tracked).length;
+  $("board").innerHTML = `<div class="empty">${
+    !total ? "No games on the board for this sport right now."
+    : !tracked
+      ? `<b>${total} games on the schedule, none being watched yet.</b><br><br>
+         The schedule comes from a free endpoint, so every sport appears here.
+         Odds cost credits, and the budget went to the sports closest to
+         starting. Raise <code>MONTHLY_CREDITS</code> in <code>config.py</code>,
+         or raise this sport's <code>priority</code>, to have it watched.`
+    : `Nothing matches that filter. ${tracked} of ${total} games here have line
+       history — try <b>every game</b>.`}</div>`;
 }
 
 async function loadSport(key){
@@ -270,9 +284,17 @@ async function boot(){
   $("sub").textContent =
     "Line movement only — no model, no projections. Updated "
     + new Date(INDEX.updated).toLocaleString();
+  // The count says what is WATCHED, not just what exists. A tab reading
+  // "0/46" next to one reading "49/66" is the difference between a sport the
+  // budget is tracking and one it is only listing, and that distinction is
+  // the single most confusing thing about running this on a small plan.
   $("tabs").innerHTML = sports.map(s =>
-    `<button class="tab" data-key="${esc(s.key)}">${esc(s.title)}
-      <span class="n">${s.flagged || 0}/${s.games}</span></button>`).join("");
+    `<button class="tab${s.tracked ? "" : " untracked"}" data-key="${esc(s.key)}"
+      title="${s.tracked ? `${s.tracked} of ${s.games} games have line history`
+                         : "schedule only - the budget has not bought this sport's odds"}"
+      >${esc(s.title)}
+      <span class="n">${s.tracked ? (s.flagged || 0) + "/" + s.games
+                                  : "schedule"}</span></button>`).join("");
   for (const el of document.querySelectorAll(".tab"))
     el.onclick = () => loadSport(el.dataset.key);
   $("filter").onchange = draw;
