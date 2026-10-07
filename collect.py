@@ -47,7 +47,7 @@ def _spend_today() -> int:
     over - a budget that resets on every run is not a budget.
     """
     p = S.EVENTS.parent / SPEND_FILE
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = O.budget_day()
     if not p.exists():
         return 0
     try:
@@ -63,7 +63,7 @@ def _spend_today() -> int:
 def _record_spend(used: int) -> None:
     p = S.EVENTS.parent / SPEND_FILE
     p.parent.mkdir(parents=True, exist_ok=True)
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = O.budget_day()
     p.write_text(json.dumps({"date": today, "spent": _spend_today() + used},
                             separators=(",", ":")))
 
@@ -142,26 +142,44 @@ def plan(key: str, dry: bool = False) -> list:
 
 
 def focus(order: list, budget: O.Budget) -> list:
-    """When the allowance cannot cover everything, watch fewer things often.
+    """When the allowance cannot cover everything, watch what is about to
+    start - and among those, what you care about most.
 
-    This is the lesson of the first dry run. Six sports polled once a day is
-    six snapshots and NO line movement; one sport polled fifteen times is a
-    chart. Movement needs the same game seen repeatedly, so when the budget
-    is tight the collector sticks to the top `FOCUS` sports by config
-    priority rather than following whichever game happens to start soonest -
-    a different sport each poll builds no history at all.
+    Two rules, in this order, and the order is the whole point:
+
+      1. IMMINENCE. The earliest `config.IMMINENCE_BANDS` band with anything
+         in it wins outright. A line thirty hours out barely moves and there
+         will be sixty more polls before it starts; a line three hours out is
+         moving now and will not be later.
+
+      2. PRIORITY, but only to settle who wins inside that band.
+
+    The first version of this sorted by priority alone. On a Wednesday in
+    October that meant Thursday-night NFL (priority 100, thirty-two hours
+    away) took the whole day's credits while four MLB playoff games starting
+    in three hours were never polled. Preference is not urgency.
 
     Once the budget can afford every sport on every poll this does nothing,
-    which is the correct behaviour for a paid tier.
+    which is correct for a paid tier.
     """
     if not C.FOCUS or not order:
         return order
-    full = sum(r["cost"] for r in order)
-    if budget.allows(full):
+    if budget.allows(sum(r["cost"] for r in order)):
         return order
-    by_priority = sorted(order, key=lambda r: (-r["priority"],
-                                               r["hours_to_first"]))
-    keep = {r["sport"] for r in by_priority[:C.FOCUS]}
+
+    bands = sorted(getattr(C, "IMMINENCE_BANDS", [6, 12, 24, 48]))
+    pool = []
+    for edge in bands:
+        pool = [r for r in order if r["hours_to_first"] <= edge]
+        if pool:
+            break
+    # Everything is beyond the last band - fall back to the whole list rather
+    # than returning nothing and silently skipping the poll.
+    if not pool:
+        pool = list(order)
+
+    pool.sort(key=lambda r: (-r["priority"], r["hours_to_first"]))
+    keep = {r["sport"] for r in pool[:C.FOCUS]}
     return [r for r in order if r["sport"] in keep]
 
 
@@ -181,9 +199,11 @@ def run(dry: bool = False) -> int:
           f"(day's allowance {budget.daily}, {budget.spent_today} already "
           f"used today)")
     if len(order) < all_n:
-        print(f"  budget is tight, so this poll watches the top {len(order)} "
-              f"by priority rather than spreading thin - a sport polled once "
-              f"a day shows no movement at all")
+        soon = min((r["hours_to_first"] for r in order), default=0)
+        print(f"  budget is tight, so this poll watches the {len(order)} "
+              f"sport(s) closest to starting (next game in {soon:.1f}h) "
+              f"rather than spreading thin - a line polled once a day shows "
+              f"no movement, and one thirty hours out has not started moving")
     print(f"  {'sport':<32s} {'games':>6s} {'next':>8s} {'cost':>5s}  status")
 
     total_moves = 0
