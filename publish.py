@@ -191,9 +191,12 @@ def write(days: int = 7) -> dict:
             "flagged": data["n_flagged"],
             "file": f"data/{sport}.json",
         })
-    # Sports with games first, then alphabetical, so the tab bar opens on
-    # something worth looking at.
-    index["sports"].sort(key=lambda s: (-s["games"], s["key"]))
+    # SPORTS WITH LINE HISTORY FIRST, then by how much is flagged, then by
+    # size. Ordering by game count alone buried the second tracked sport
+    # behind four that had only a schedule, which made a working site look
+    # like it was watching exactly one thing.
+    index["sports"].sort(key=lambda s: (s["tracked"] == 0, -s["flagged"],
+                                        -s["games"], s["key"]))
     text = json.dumps(index, allow_nan=False, separators=(",", ":"))
     json.loads(text)
     (OUT / "index.json").write_text(text)
