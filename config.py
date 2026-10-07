@@ -39,6 +39,16 @@ BUDGET_USE = 0.90
 # exactly what the first dry run of this project showed.
 POLLS_PER_DAY = 48
 
+# WHEN THE BUDGET DAY STARTS, in UTC hours. 8 is 4am Eastern.
+#
+# This is not cosmetic. Pacing against midnight UTC means the allowance
+# resets at 8pm Eastern - the middle of US prime time, when lines move most -
+# so the evening gets the start-of-day trickle and the credits are fully
+# released at four in the morning when nothing is happening. Anchoring the
+# day to 4am Eastern puts the reset in the dead zone and has the allowance
+# mostly released by the time the evening slate is being bet.
+BUDGET_DAY_START_UTC = 8
+
 # WHEN THE BUDGET IS TIGHT, WATCH FEWER THINGS PROPERLY.
 #
 # Line movement needs the SAME game seen repeatedly. Fifteen credits spent on
@@ -51,6 +61,18 @@ POLLS_PER_DAY = 48
 # Set it to 0 to always try every sport, which is the right setting once the
 # budget is large enough to afford them all.
 FOCUS = 1
+
+# IMMINENCE BEATS PREFERENCE. Hours-to-first-game bands, soonest first.
+#
+# A line for a game thirty hours away barely moves - there will be sixty more
+# polls before it starts. A line for a game in three hours is moving now and
+# will not be moving later. So the budget goes to the earliest band that has
+# anything in it, and `priority` only decides who wins WITHIN a band.
+#
+# Without this, config priority alone decided, and on a Wednesday in October
+# that spent the entire day's allowance on Thursday-night NFL while four MLB
+# playoff games started in three hours and went unwatched.
+IMMINENCE_BANDS = [6, 12, 24, 48]
 
 # ------------------------------------------------------------- what to watch
 # Sport keys are The Odds API's own (`/v4/sports` lists them all, free).
