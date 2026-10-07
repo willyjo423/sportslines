@@ -208,6 +208,20 @@ def main() -> int:
     DAY0 = datetime(2026, 10, 6, C.BUDGET_DAY_START_UTC, 0,
                     tzinfo=timezone.utc)
     noon = DAY0 + timedelta(hours=12)
+    # PINNED, like FOCUS. These check how a MONTHLY figure is divided; with
+    # config.DAILY_CREDITS set for a fixed-pot run, the monthly path is not
+    # the one in use and the checks would be measuring a setting rather than
+    # the code.
+    #
+    # ALL THREE TUNING KNOBS ARE PINNED, not just one. This has bitten three
+    # times: a check written against the defaults starts failing the moment
+    # the config is tuned for a real plan, and every time the TEST was wrong
+    # rather than the code. A test of pacing must set up the pacing it is
+    # testing; reading the live setting means it measures the setting.
+    _was = (C.DAILY_CREDITS, C.POLLS_PER_DAY, C.FOCUS)
+    C.DAILY_CREDITS, C.POLLS_PER_DAY, C.FOCUS = None, 48, 1
+    import importlib
+    importlib.reload(O)
     b = O.Budget(500, 0.9, now=noon)
     check("the free tier's day is about 15 credits",
           13 <= b.daily <= 16, f"{b.daily} a day")
@@ -251,6 +265,12 @@ def main() -> int:
     # spent the whole day's credits on a line that would not move for a day
     # and a half.
     import collect as CO
+    # FOCUS IS PINNED HERE, not read from config. These check what focus()
+    # does when it narrows; reading the live setting meant that turning
+    # narrowing off - the correct thing to do on a paid tier - broke two
+    # tests that have nothing to do with the tier. A test of a behaviour must
+    # set up that behaviour rather than hope the config still enables it.
+    C.FOCUS = 1
     board = [
         {"sport": "baseball_mlb", "hours_to_first": 3.4, "priority": 75,
          "cost": 3, "events": 4},
@@ -294,6 +314,21 @@ def main() -> int:
     rich = O.Budget(100_000, 0.9, now=noon)
     check("a budget that can afford everything focuses on nothing",
           len(CO.focus(board, rich)) == len(board))
+
+    # And FOCUS=0 - the paid-tier setting - must never narrow, whatever the
+    # budget says.
+    C.FOCUS = 0
+    check("FOCUS=0 never narrows, even on a tight budget",
+          len(CO.focus(board, tight)) == len(board))
+    C.DAILY_CREDITS, C.POLLS_PER_DAY, C.FOCUS = _was
+    importlib.reload(O)
+
+    # And the override itself: when set, it wins outright.
+    C.DAILY_CREDITS = 70
+    check("an explicit daily figure overrides the monthly one",
+          O.Budget(500, 0.9, now=noon).daily == 70,
+          f"{O.Budget(500, 0.9, now=noon).daily} a day")
+    C.DAILY_CREDITS = _was[0]
 
     b2 = O.Budget(100_000, 0.9, now=noon)
     b2.charge(1, remaining=4)
